@@ -1,9 +1,20 @@
 import { getAuthFiles, apiCall } from "./cpa-client";
 import { getCodexAccounts, resolveAccountId } from "./codex-quota";
-import type { AuthFileItem } from "./types";
 
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
-const CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions";
+const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
+
+function extractErrorDetail(body: unknown): string | null {
+  if (body == null || typeof body !== "object") return null;
+  const o = body as Record<string, unknown>;
+  const err = o.error;
+  const errStr = typeof err === "string" ? err : err && typeof err === "object" && "message" in err ? String((err as { message?: string }).message) : "";
+  const msg = [errStr, o.message, o.detail].filter(Boolean).map(String).join(" ").trim();
+  const code = o.code ?? (err && typeof err === "object" && "code" in err ? (err as { code?: string }).code : undefined);
+  if (msg || code) return [code, msg].filter(Boolean).join(" ").trim() || null;
+  return null;
+}
+
 const CODEX_HEADERS_BASE: Record<string, string> = {
   Authorization: "Bearer $TOKEN$",
   "Content-Type": "application/json",
@@ -46,20 +57,32 @@ export async function refreshAllAccounts(): Promise<RefreshResult[]> {
           },
         });
       } else {
-        await apiCall({
+        const requestBody = JSON.stringify({
+          model: "gpt-5",
+          instructions: "Reply with ok",
+          input: [{ role: "user", content: "hi" }],
+          stream: true,
+          store: false,
+        });
+        const res = await apiCall<unknown>({
           authIndex,
           method: "POST",
-          url: CHAT_COMPLETIONS_URL,
+          url: CODEX_RESPONSES_URL,
           header: {
             ...CODEX_HEADERS_BASE,
             "Chatgpt-Account-Id": accountId,
           },
-          data: JSON.stringify({
-            model: "gpt-4.1-nano",
-            max_tokens: 1,
-            messages: [{ role: "user" as const, content: "hi" }],
-          }),
+          data: requestBody,
         });
+        const statusCode = res.statusCode ?? res.status_code ?? 0;
+        const ok = statusCode >= 200 && statusCode < 300;
+        if (!ok) {
+          const errDetail = extractErrorDetail(res.body);
+          results.push({ name: file.name, success: false, error: errDetail ? `HTTP ${statusCode}: ${errDetail}` : `HTTP ${statusCode}` });
+        } else {
+          results.push({ name: file.name, success: true });
+        }
+        continue;
       }
       results.push({ name: file.name, success: true });
     } catch (err) {

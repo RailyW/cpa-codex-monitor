@@ -1,6 +1,6 @@
 import { refreshAllAccounts } from "@/lib/codex-refresh";
 
-const CHECK_INTERVAL_MS = 60 * 1000;
+const CHECK_INTERVAL_MS = 30 * 1000;
 const WORLD_TIME_API = "https://worldtimeapi.org/api/timezone";
 
 /** 将 "6:00" / "06:00" 规范为 "HH:mm" */
@@ -23,7 +23,7 @@ function parseCronTimes(envValue: string | undefined): string[] {
 }
 
 /** 通过 WorldTimeAPI 获取指定时区当前时间（联网授时），失败时回退到本机时间 */
-async function getCurrentTimeInZone(timezone: string): Promise<{ hour: number; minute: number; key: string }> {
+async function getCurrentTimeInZone(timezone: string): Promise<{ hour: number; minute: number; key: string; source: string }> {
   const url = `${WORLD_TIME_API}/${encodeURIComponent(timezone)}`;
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
@@ -37,8 +37,8 @@ async function getCurrentTimeInZone(timezone: string): Promise<{ hour: number; m
     const hour = parseInt(h, 10);
     const minute = parseInt(min, 10);
     const key = `${y}-${mo}-${d} ${h}:${min}`;
-    return { hour, minute, key };
-  } catch {
+    return { hour, minute, key, source: "WorldTimeAPI" };
+  } catch (e) {
     const formatter = new Intl.DateTimeFormat("en-CA", {
       timeZone: timezone,
       hour: "2-digit",
@@ -50,7 +50,7 @@ async function getCurrentTimeInZone(timezone: string): Promise<{ hour: number; m
     const minute = parseInt(parts.find((p) => p.type === "minute")?.value ?? "0", 10);
     const date = new Date();
     const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
-    return { hour, minute, key };
+    return { hour, minute, key, source: "本机时间(Intl)" };
   }
 }
 
@@ -75,30 +75,30 @@ export function startScheduler(): void {
   }
 
   let lastRunKey: string | null = null;
+  const timesStr = `[${times.join(", ")}]`;
 
   const tick = async () => {
     try {
-      const { hour, minute, key } = await getCurrentTimeInZone(timezone);
-      if (!timeMatches(hour, minute, times)) return;
-      if (lastRunKey === key) return;
-      lastRunKey = key;
+      const { hour, minute, key, source } = await getCurrentTimeInZone(timezone);
+      const nowStr = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+      const matched = timeMatches(hour, minute, times);
 
-      console.log(`[CRON] 开始执行定时刷新 (${timezone} ${key}): ${new Date().toISOString()}`);
+      if (!matched || lastRunKey === key) return;
+      lastRunKey = key;
+      console.log(`[CRON] 开始定时刷新 (${timezone} ${key})`);
       const results = await refreshAllAccounts();
       const success = results.filter((r) => r.success).length;
-      const total = results.length;
       results.forEach((r) => {
-        if (r.success) console.log(`[CRON] 刷新账号 ${r.name} → 成功`);
-        else console.log(`[CRON] 刷新账号 ${r.name} → 失败: ${r.error}`);
+        if (r.success) console.log(`[CRON] ${r.name} → 成功`);
+        else console.log(`[CRON] ${r.name} → 失败: ${r.error}`);
       });
-      console.log(`[CRON] 完成: 成功 ${success}/${total}`);
+      console.log(`[CRON] 完成: ${success}/${results.length}`);
     } catch (err) {
-      console.error("[CRON] 刷新失败:", err);
+      console.error("[CRON] tick 异常:", err);
     }
   };
 
   tick();
-  const intervalId = setInterval(tick, CHECK_INTERVAL_MS);
-  const log = `时区=${timezone}, 时间=[${times.join(", ")}], 使用网络授时(WorldTimeAPI)，失败时回退本机时间`;
-  console.log("[CRON] 已启动定时任务:", log);
+  setInterval(tick, CHECK_INTERVAL_MS);
+  console.log(`[CRON] 已启动 时区=${timezone} 时刻=${timesStr} 间隔=${CHECK_INTERVAL_MS / 1000}s`);
 }
