@@ -6,15 +6,11 @@ import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
 import type { CodexQuotaResponse } from "@/lib/types";
 import { QuotaCard } from "./QuotaCard";
 import { StatsSummary } from "./StatsSummary";
-import { RefreshButton } from "./RefreshButton";
-import { AutoRefreshSelect } from "./AutoRefreshSelect";
 
 export function QuotaDashboard() {
   const [data, setData] = useState<CodexQuotaResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [autoRefresh, setAutoRefresh] = useState(60);
-
   const fetchQuota = useCallback(async () => {
     setError(null);
     try {
@@ -39,25 +35,15 @@ export function QuotaDashboard() {
   }, [fetchQuota]);
 
   useEffect(() => {
-    if (autoRefresh <= 0) return;
-    const id = setInterval(fetchQuota, autoRefresh * 1000);
+    const id = setInterval(fetchQuota, 60 * 1000);
     return () => clearInterval(id);
-  }, [autoRefresh, fetchQuota]);
+  }, [fetchQuota]);
 
   return (
     <Container size="4" py="6">
       <Section size="1">
         <Flex justify="between" align="center" wrap="wrap" gap="4" mb="4">
           <Heading size="6">CPA Codex Monitor</Heading>
-          <Flex align="center" gap="3">
-            <RefreshButton onRefresh={fetchQuota} />
-            <Flex align="center" gap="2">
-              <Text size="2" color="gray">
-                自动刷新
-              </Text>
-              <AutoRefreshSelect value={autoRefresh} onChange={setAutoRefresh} />
-            </Flex>
-          </Flex>
         </Flex>
       </Section>
 

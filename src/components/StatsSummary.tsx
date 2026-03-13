@@ -56,7 +56,7 @@ export function StatsSummary({ data }: StatsSummaryProps) {
       <Card size="1" variant="surface">
         <Flex direction="column" gap="1">
           <Text size="1" color="gray">
-            查询时间
+            上次刷新时间
           </Text>
           <Text size="5" weight="bold">
             {formatTime(data.queriedAt)}

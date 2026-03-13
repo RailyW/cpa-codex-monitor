@@ -10,6 +10,21 @@ function progressColor(percent: number | null): "green" | "yellow" | "red" | "gr
   return "red";
 }
 
+function formatExactTime(isoStr: string | null): string {
+  if (!isoStr) return "";
+  try {
+    const d = new Date(isoStr);
+    if (Number.isNaN(d.getTime())) return "";
+    const mo = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${mo}/${day} ${hh}:${mm}`;
+  } catch {
+    return "";
+  }
+}
+
 interface QuotaProgressBarProps {
   window: QuotaWindow;
 }
@@ -19,6 +34,11 @@ export function QuotaProgressBar({ window }: QuotaProgressBarProps) {
   const value = percent !== null ? Math.round(percent) : undefined;
   const color = progressColor(percent);
   const percentLabel = percent !== null ? `${Math.round(percent)}%` : "--";
+
+  const exact = formatExactTime(window.resetAt);
+  const resetDisplay = exact
+    ? `${window.resetLabel} (${exact})`
+    : window.resetLabel;
 
   return (
     <Flex direction="column" gap="1">
@@ -32,7 +52,7 @@ export function QuotaProgressBar({ window }: QuotaProgressBarProps) {
       </Flex>
       <Progress value={value ?? 0} color={color} size="1" />
       <Text size="1" color="gray">
-        重置: {window.resetLabel}
+        重置: {resetDisplay}
       </Text>
     </Flex>
   );
