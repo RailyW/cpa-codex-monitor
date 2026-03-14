@@ -3,67 +3,98 @@ import { refreshAllAccounts } from "@/lib/codex-refresh";
 const CHECK_INTERVAL_MS = 30 * 1000;
 const WORLD_TIME_API = "https://worldtimeapi.org/api/timezone";
 
-/** 将 "6:00" / "06:00" 规范为 "HH:mm" */
-function normalizeTime(s: string): string | null {
-  const t = s.trim().replace(/\s/g, "");
-  const m = t.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
-  if (!m) return null;
-  const h = m[1].padStart(2, "0");
-  const min = m[2];
-  return `${h}:${min}`;
+function normalizeTime(value: string): string | null {
+  const trimmed = value.trim().replace(/\s/g, "");
+  const match = trimmed.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return null;
+
+  const hour = Number.parseInt(match[1], 10);
+  const minute = Number.parseInt(match[2], 10);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
-/** 解析 CRON_TIMES 环境变量："06:00, 11:00" => ["06:00", "11:00"] */
 function parseCronTimes(envValue: string | undefined): string[] {
   if (!envValue?.trim()) return ["06:00", "11:00"];
+
   return envValue
-    .split(/[,，\s]+/)
-    .map((s) => normalizeTime(s))
-    .filter((s): s is string => s !== null);
+    .split(/[,\s，]+/)
+    .map((value) => normalizeTime(value))
+    .filter((value): value is string => value !== null);
 }
 
-/** 通过 WorldTimeAPI 获取指定时区当前时间（联网授时），失败时回退到本机时间 */
-async function getCurrentTimeInZone(timezone: string): Promise<{ hour: number; minute: number; key: string; source: string }> {
+async function getCurrentTimeInZone(
+  timezone: string
+): Promise<{ hour: number; minute: number; key: string; source: string }> {
   const url = `${WORLD_TIME_API}/${encodeURIComponent(timezone)}`;
+
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
     const data = (await res.json()) as { datetime?: string };
-    const dt = data?.datetime;
-    if (!dt) throw new Error("No datetime");
-    const match = dt.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+    const datetime = data.datetime;
+    if (!datetime) throw new Error("No datetime");
+
+    const match = datetime.match(
+      /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/
+    );
     if (!match) throw new Error("Invalid datetime format");
-    const [, y, mo, d, h, min] = match;
-    const hour = parseInt(h, 10);
-    const minute = parseInt(min, 10);
-    const key = `${y}-${mo}-${d} ${h}:${min}`;
-    return { hour, minute, key, source: "WorldTimeAPI" };
-  } catch (e) {
+
+    const [, year, month, day, hour, minute] = match;
+    return {
+      hour: Number.parseInt(hour, 10),
+      minute: Number.parseInt(minute, 10),
+      key: `${year}-${month}-${day} ${hour}:${minute}`,
+      source: "WorldTimeAPI",
+    };
+  } catch {
     const formatter = new Intl.DateTimeFormat("en-CA", {
       timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
     });
     const parts = formatter.formatToParts(new Date());
-    const hour = parseInt(parts.find((p) => p.type === "hour")?.value ?? "0", 10);
-    const minute = parseInt(parts.find((p) => p.type === "minute")?.value ?? "0", 10);
-    const date = new Date();
-    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
-    return { hour, minute, key, source: "本机时间(Intl)" };
+    const year = parts.find((part) => part.type === "year")?.value ?? "0000";
+    const month = parts.find((part) => part.type === "month")?.value ?? "00";
+    const day = parts.find((part) => part.type === "day")?.value ?? "00";
+    const hour = Number.parseInt(
+      parts.find((part) => part.type === "hour")?.value ?? "0",
+      10
+    );
+    const minute = Number.parseInt(
+      parts.find((part) => part.type === "minute")?.value ?? "0",
+      10
+    );
+
+    return {
+      hour,
+      minute,
+      key: `${year}-${month}-${day} ${String(hour).padStart(2, "0")}:${String(
+        minute
+      ).padStart(2, "0")}`,
+      source: "Intl",
+    };
   }
 }
 
-/** 判断当前时刻是否匹配时间列表中的某一项（只精确到分钟） */
 function timeMatches(hour: number, minute: number, times: string[]): boolean {
-  const now = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
-  return times.includes(now);
+  const current = `${String(hour).padStart(2, "0")}:${String(minute).padStart(
+    2,
+    "0"
+  )}`;
+  return times.includes(current);
 }
 
 export function startScheduler(): void {
   const enabled = process.env.CRON_ENABLED?.toLowerCase() === "true";
   if (!enabled) {
-    console.log("[CRON] 定时任务已关闭 (CRON_ENABLED 未设为 true)");
+    console.log("[CRON] 定时刷新已关闭 (CRON_ENABLED 未设为 true)");
     return;
   }
 
@@ -75,30 +106,43 @@ export function startScheduler(): void {
   }
 
   let lastRunKey: string | null = null;
-  const timesStr = `[${times.join(", ")}]`;
+  const timesLabel = `[${times.join(", ")}]`;
 
   const tick = async () => {
     try {
       const { hour, minute, key, source } = await getCurrentTimeInZone(timezone);
-      const nowStr = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
-      const matched = timeMatches(hour, minute, times);
+      const current = `${String(hour).padStart(2, "0")}:${String(minute).padStart(
+        2,
+        "0"
+      )}`;
 
-      if (!matched || lastRunKey === key) return;
+      if (!timeMatches(hour, minute, times)) return;
+      if (lastRunKey === key) return;
+
       lastRunKey = key;
-      console.log(`[CRON] 开始定时刷新 (${timezone} ${key})`);
-      const results = await refreshAllAccounts();
-      const success = results.filter((r) => r.success).length;
-      results.forEach((r) => {
-        if (r.success) console.log(`[CRON] ${r.name} → 成功`);
-        else console.log(`[CRON] ${r.name} → 失败: ${r.error}`);
+      console.log(
+        `[CRON] 命中计划时刻，开始刷新任务用量计费时间窗口 time=${key} timezone=${timezone} source=${source}`
+      );
+
+      const results = await refreshAllAccounts({
+        trigger: `cron:${timezone}:${key}`,
       });
-      console.log(`[CRON] 完成: ${success}/${results.length}`);
+      const successCount = results.filter((result) => result.success).length;
+
+      console.log(
+        `[CRON] 本次执行完成 time=${key} current=${current} success=${successCount}/${results.length}`
+      );
     } catch (err) {
       console.error("[CRON] tick 异常:", err);
     }
   };
 
-  tick();
-  setInterval(tick, CHECK_INTERVAL_MS);
-  console.log(`[CRON] 已启动 时区=${timezone} 时刻=${timesStr} 间隔=${CHECK_INTERVAL_MS / 1000}s`);
+  void tick();
+  setInterval(() => {
+    void tick();
+  }, CHECK_INTERVAL_MS);
+
+  console.log(
+    `[CRON] 已启动 timezone=${timezone} times=${timesLabel} interval=${CHECK_INTERVAL_MS / 1000}s`
+  );
 }

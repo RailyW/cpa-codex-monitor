@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST() {
   try {
-    const results = await refreshAllAccounts();
+    const results = await refreshAllAccounts({ trigger: "api:/api/codex-refresh" });
     return NextResponse.json({
       results,
       triggeredAt: new Date().toISOString(),
