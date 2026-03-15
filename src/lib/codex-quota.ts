@@ -1,4 +1,4 @@
-import { getAuthFiles, downloadAuthFile, apiCall } from "./cpa-client";
+import { getAuthFiles, apiCall } from "./cpa-client";
 import type {
   AuthFileItem,
   CodexUsagePayload,
@@ -12,7 +12,6 @@ import {
   FIVE_HOUR_SECONDS,
   WEEK_SECONDS,
   WINDOW_LABELS,
-  type CodexAuthFileContent,
 } from "./types";
 
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
@@ -176,56 +175,28 @@ export function getCodexAccounts(files: AuthFileItem[]): AuthFileItem[] {
   });
 }
 
-const authFileCache = new Map<string, CodexAuthFileContent>();
-
-function pickAccountIdFromObject(obj: Record<string, unknown>): string | null {
-  const keys = [
-    "chatgpt_account_id",
-    "chatgptAccountId",
-    "account_id",
-    "accountId",
-    "account",
-  ];
-  for (const k of keys) {
-    const v = obj[k];
-    if (typeof v === "string" && v.trim()) return v.trim();
-  }
-  for (const [k, v] of Object.entries(obj)) {
-    if (typeof v === "object" && v !== null && !Array.isArray(v)) {
-      const inner = pickAccountIdFromObject(v as Record<string, unknown>);
-      if (inner) return inner;
-    }
-  }
-  return null;
+function extractAccountId(file: AuthFileItem): string | null {
+  return (
+    normStr(file.chatgpt_account_id ?? file.chatgptAccountId) ??
+    normStr(file.id_token?.chatgpt_account_id ?? file.idToken?.chatgptAccountId) ??
+    normStr(file.account_id ?? file.accountId)
+  );
 }
 
-/** Prefer auth-files list (account, account_id, chatgpt_account_id); then try downloaded JSON. */
-function extractAccountId(file: AuthFileItem, content: CodexAuthFileContent | null): string | null {
-  const fromList =
-    normStr(file.account) ??
-    normStr(file.account_id ?? file.accountId) ??
-    normStr(file.chatgpt_account_id ?? file.chatgptAccountId);
-  if (fromList) return fromList;
-  if (!content || typeof content !== "object") return null;
-  return pickAccountIdFromObject(content as Record<string, unknown>);
+function extractPlanType(file: AuthFileItem): string | null {
+  const planType =
+    normStr(file.plan_type ?? file.planType) ??
+    normStr(file.id_token?.plan_type ?? file.idToken?.planType);
+  return planType?.toLowerCase() ?? null;
 }
 
 export async function resolveAccountId(file: AuthFileItem): Promise<{ accountId: string | null; planType: string | null; email: string | null }> {
-  try {
-    let content: CodexAuthFileContent | null = authFileCache.get(file.name) ?? null;
-    if (!content) {
-      content = await downloadAuthFile(file.name);
-      authFileCache.set(file.name, content);
-    }
-    const accountId = extractAccountId(file, content);
-    const planType = normStr(content.plan_type ?? content.planType)?.toLowerCase() ?? null;
-    const email = normStr(content.email) ?? null;
-    return { accountId, planType: planType && ["plus", "team", "free"].includes(planType) ? planType : null, email };
-  } catch {
-    const fromList = extractAccountId(file, null);
-    if (fromList) return { accountId: fromList, planType: null, email: file.email ?? null };
-    return { accountId: null, planType: null, email: null };
-  }
+  const accountId = extractAccountId(file);
+  const planType = extractPlanType(file);
+  const normalizedPlanType =
+    planType && ["plus", "team", "free"].includes(planType) ? planType : null;
+  const email = normStr(file.email) ?? null;
+  return { accountId, planType: normalizedPlanType, email };
 }
 
 export async function fetchQuotaForAccount(file: AuthFileItem): Promise<CodexAccountQuota> {

@@ -1,6 +1,17 @@
-/** CPA auth-files 列表响应 */
+/** CPA auth-files list response. */
 export interface AuthFilesResponse {
   files: AuthFileItem[];
+}
+
+export interface CodexIdTokenInfo {
+  chatgpt_account_id?: string;
+  chatgptAccountId?: string;
+  plan_type?: string;
+  planType?: string;
+  chatgpt_subscription_active_start?: string | number | null;
+  chatgptSubscriptionActiveStart?: string | number | null;
+  chatgpt_subscription_active_until?: string | number | null;
+  chatgptSubscriptionActiveUntil?: string | number | null;
 }
 
 export interface AuthFileItem {
@@ -25,11 +36,14 @@ export interface AuthFileItem {
   last_refresh?: string;
   auth_index?: string;
   authIndex?: string;
-  /** 部分 CPA 版本在列表中直接返回账号 ID (UUID) */
+  plan_type?: string;
+  planType?: string;
   account_id?: string;
   accountId?: string;
   chatgpt_account_id?: string;
   chatgptAccountId?: string;
+  id_token?: CodexIdTokenInfo;
+  idToken?: CodexIdTokenInfo;
 }
 
 export interface CodexAuthFileContent {
@@ -58,8 +72,8 @@ export interface ApiCallRequest {
 export interface ApiCallResponse<T = unknown> {
   status_code?: number;
   statusCode?: number;
-  header?: Record<string, string>;
-  headers?: Record<string, string>;
+  header?: Record<string, string[] | string>;
+  headers?: Record<string, string[] | string>;
   body?: T;
   bodyText?: string;
 }
@@ -69,7 +83,7 @@ export interface CodexUsageWindow {
   limitWindowSeconds?: number;
   used_percent?: number;
   usedPercent?: number;
-  /** ISO 8601 string or Unix timestamp in seconds */
+  /** ISO 8601 string or Unix timestamp in seconds. */
   reset_at?: string | number;
   resetAt?: string | number;
   resets_at?: string | number;
@@ -108,7 +122,7 @@ export interface CodexUsagePayload {
   additionalRateLimits?: CodexAdditionalRateLimit[];
 }
 
-/** 单个额度窗口（已解析） */
+/** A parsed quota window. */
 export interface QuotaWindow {
   id: string;
   label: string;
