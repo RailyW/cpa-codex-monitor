@@ -2,6 +2,8 @@ import { apiCall, getAuthFiles } from "./cpa-client";
 import { getCodexAccounts, resolveAccountId } from "./codex-quota";
 
 const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
+const MANAGEMENT_API_PATH = "/v0/management/api-call";
+const BODY_PREVIEW_LIMIT = 240;
 
 function extractErrorDetail(body: unknown): string | null {
   if (body == null || typeof body !== "object") return null;
@@ -47,13 +49,57 @@ export interface RefreshAllAccountsOptions {
   trigger?: string;
 }
 
-function logRefresh(message: string): void {
+function logRefresh(message: string, details?: Record<string, unknown>): void {
+  if (details) {
+    console.log(`[Refresh] ${message} ${JSON.stringify(details)}`);
+    return;
+  }
   console.log(`[Refresh] ${message}`);
 }
 
 function buildTriggerLabel(trigger?: string): string {
   const label = trigger?.trim();
   return label ? label : "manual";
+}
+
+function maskValue(value: string | null | undefined, head: number = 4, tail: number = 4): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length <= head + tail) return trimmed;
+  return `${trimmed.slice(0, head)}...${trimmed.slice(-tail)}`;
+}
+
+function previewText(value: string, maxLength: number = BODY_PREVIEW_LIMIT): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength)}...(truncated)`;
+}
+
+function sanitizeHeaders(headers: Record<string, string>): Record<string, string> {
+  const sanitized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === "chatgpt-account-id") {
+      sanitized[key] = maskValue(value) ?? "<empty>";
+      continue;
+    }
+    sanitized[key] = value;
+  }
+  return sanitized;
+}
+
+function buildResponseSummary(bodyText: string, contentType: string | null): Record<string, unknown> {
+  return {
+    contentType,
+    bodyLength: bodyText.length,
+    containsResponseCreated: bodyText.includes("response.created"),
+    containsResponseCompleted: bodyText.includes("response.completed"),
+    containsUsageLimitReached: bodyText.includes("usage_limit_reached"),
+    bodyHead: previewText(bodyText.slice(0, BODY_PREVIEW_LIMIT)),
+    bodyTail:
+      bodyText.length > BODY_PREVIEW_LIMIT
+        ? previewText(bodyText.slice(-BODY_PREVIEW_LIMIT))
+        : null,
+  };
 }
 
 export async function refreshAllAccounts(
@@ -64,23 +110,36 @@ export async function refreshAllAccounts(
   const codexFiles = getCodexAccounts(files);
   const results: RefreshResult[] = [];
 
-  logRefresh(
-    `开始刷新任务用量计费时间窗口 trigger=${trigger} accounts=${codexFiles.length}`
-  );
+  logRefresh("refresh job started", {
+    trigger,
+    accounts: codexFiles.length,
+    managementPath: MANAGEMENT_API_PATH,
+    upstreamUrl: CODEX_RESPONSES_URL,
+  });
 
   if (codexFiles.length === 0) {
-    logRefresh(`未找到可刷新的 Codex 账号 trigger=${trigger}`);
+    logRefresh("no codex accounts found", { trigger });
     return results;
   }
 
   for (const file of codexFiles) {
     const authIndex = file.auth_index ?? file.authIndex ?? null;
-    logRefresh(`${file.name} 开始执行 trigger=${trigger}`);
+    logRefresh("account picked", {
+      trigger,
+      account: file.name,
+      authIndex: maskValue(authIndex),
+      provider: file.provider,
+      email: file.email ?? null,
+    });
 
     if (!authIndex) {
       const error = "missing auth_index";
       results.push({ name: file.name, success: false, error });
-      logRefresh(`${file.name} 失败: ${error}`);
+      logRefresh("account skipped", {
+        trigger,
+        account: file.name,
+        error,
+      });
       continue;
     }
 
@@ -88,24 +147,66 @@ export async function refreshAllAccounts(
     if (!accountId) {
       const error = "missing chatgpt_account_id";
       results.push({ name: file.name, success: false, error });
-      logRefresh(`${file.name} 失败: ${error}`);
+      logRefresh("account skipped", {
+        trigger,
+        account: file.name,
+        authIndex: maskValue(authIndex),
+        error,
+      });
       continue;
     }
 
-    try {
-      const res = await apiCall<unknown>({
-        authIndex,
-        method: "POST",
-        url: CODEX_RESPONSES_URL,
-        header: {
-          ...CODEX_HEADERS_BASE,
-          "Chatgpt-Account-Id": accountId,
-        },
-        data: REFRESH_REQUEST_BODY,
-      });
+    const headers = {
+      ...CODEX_HEADERS_BASE,
+      "Chatgpt-Account-Id": accountId,
+    };
+    const requestPayload = {
+      authIndex,
+      method: "POST" as const,
+      url: CODEX_RESPONSES_URL,
+      header: headers,
+      data: REFRESH_REQUEST_BODY,
+    };
 
+    logRefresh("request prepared", {
+      trigger,
+      account: file.name,
+      authIndex: maskValue(authIndex),
+      accountId: maskValue(accountId),
+      managementPath: MANAGEMENT_API_PATH,
+      upstreamMethod: requestPayload.method,
+      upstreamUrl: requestPayload.url,
+      headers: sanitizeHeaders(requestPayload.header),
+      bodyPreview: previewText(requestPayload.data),
+    });
+
+    const startedAt = Date.now();
+
+    try {
+      const res = await apiCall<unknown>(requestPayload);
+      const durationMs = Date.now() - startedAt;
       const statusCode = res.statusCode ?? res.status_code ?? 0;
       const ok = statusCode >= 200 && statusCode < 300;
+      const bodyText = String(res.bodyText ?? "");
+      const contentTypeValue =
+        res.header?.["content-type"] ??
+        res.header?.["Content-Type"] ??
+        res.headers?.["content-type"] ??
+        res.headers?.["Content-Type"] ??
+        null;
+      const contentType = Array.isArray(contentTypeValue)
+        ? contentTypeValue.join("; ")
+        : contentTypeValue;
+
+      logRefresh("response received", {
+        trigger,
+        account: file.name,
+        authIndex: maskValue(authIndex),
+        accountId: maskValue(accountId),
+        statusCode,
+        durationMs,
+        ...buildResponseSummary(bodyText, contentType),
+      });
 
       if (!ok) {
         const errDetail = extractErrorDetail(res.body);
@@ -113,23 +214,47 @@ export async function refreshAllAccounts(
           ? `HTTP ${statusCode}: ${errDetail}`
           : `HTTP ${statusCode}`;
         results.push({ name: file.name, success: false, error });
-        logRefresh(`${file.name} 失败: ${error}`);
+        logRefresh("request failed", {
+          trigger,
+          account: file.name,
+          authIndex: maskValue(authIndex),
+          accountId: maskValue(accountId),
+          statusCode,
+          durationMs,
+          error,
+        });
         continue;
       }
 
       results.push({ name: file.name, success: true });
-      logRefresh(`${file.name} 成功 status=${statusCode}`);
+      logRefresh("request succeeded", {
+        trigger,
+        account: file.name,
+        authIndex: maskValue(authIndex),
+        accountId: maskValue(accountId),
+        statusCode,
+        durationMs,
+      });
     } catch (err) {
+      const durationMs = Date.now() - startedAt;
       const error = err instanceof Error ? err.message : String(err);
       results.push({ name: file.name, success: false, error });
-      logRefresh(`${file.name} 失败: ${error}`);
+      logRefresh("request threw", {
+        trigger,
+        account: file.name,
+        authIndex: maskValue(authIndex),
+        accountId: maskValue(accountId),
+        durationMs,
+        error,
+      });
     }
   }
 
   const successCount = results.filter((result) => result.success).length;
-  logRefresh(
-    `刷新完成 trigger=${trigger} success=${successCount}/${results.length}`
-  );
+  logRefresh("refresh job finished", {
+    trigger,
+    success: `${successCount}/${results.length}`,
+  });
 
   return results;
 }
